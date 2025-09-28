@@ -1,0 +1,334 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Vennio – Find the central location</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
+  <style>
+    :root{ --blue:#0077A6; --teal:#2CA58D; --aqua:#6BCBCE; --off:#F7F9F9; --coral:#FF6B6B; --ink:#0f172a; }
+    *{box-sizing:border-box}
+    body{margin:0;font-family:Inter,system-ui,Segoe UI,Roboto,Helvetica,Arial; color:var(--ink); background:var(--off)}
+    header{padding:16px 20px; display:flex; gap:12px; align-items:center; background:white; border-bottom:1px solid #e5e7eb}
+    .logo{width:34px;height:34px;border-radius:50%;background:
+      radial-gradient(circle at 55% 45%, var(--aqua) 0 42%, transparent 43%),
+      radial-gradient(circle at 45% 55%, var(--teal) 0 42%, transparent 43%),
+      radial-gradient(circle at 50% 50%, var(--coral) 0 16%, transparent 17%);
+      position:relative; box-shadow:0 1px 2px rgba(0,0,0,.08)}
+    h1{font-family:Poppins,Inter,system-ui; font-size:18px; margin:0}
+
+    .container{display:grid; grid-template-columns:380px 1fr; min-height:calc(100vh - 66px)}
+    .panel{padding:18px; background:white; border-right:1px solid #e5e7eb; overflow:auto}
+    label{font-weight:600; font-size:14px}
+    textarea{width:100%; min-height:120px; resize:vertical; padding:12px; border:1px solid #d1d5db; border-radius:12px; font-family:inherit}
+    .hint{font-size:12px; color:#475569; margin-top:6px}
+    .row{display:flex; gap:10px; margin-top:12px}
+    button{appearance:none; border:0; padding:10px 14px; border-radius:12px; cursor:pointer; font-weight:600}
+    .primary{background:var(--blue); color:white}
+    .ghost{background:#eef4f7; color:#0b3a4a}
+    .bad{color:#b91c1c}
+    .ok{color:#166534}
+    .kv{margin-top:14px; font-size:14px; line-height:1.5}
+    .kv div{display:flex; justify-content:space-between; gap:10px; padding:6px 0; border-bottom:1px dashed #e5e7eb}
+    .chips{display:flex; flex-wrap:wrap; gap:6px; margin-top:10px}
+    .chip{background:#f1f5f9; border:1px solid #e2e8f0; border-radius:999px; padding:4px 10px; font-size:12px; position:relative; padding-right:24px}
+    .chip button{position:absolute; right:4px; top:2px; border:none; background:transparent; cursor:pointer; font-weight:700}
+    #map{height:100%; width:100%}
+    .footer{margin-top:10px; font-size:12px; color:#64748b}
+    .small{font-size:12px}
+    .section{margin-top:18px}
+    .field{display:flex; align-items:center; gap:8px; margin-top:8px}
+    .field input[type=range]{width:100%}
+    table{width:100%; border-collapse:collapse; margin-top:8px; font-size:14px}
+    th, td{border-bottom:1px solid #e5e7eb; padding:8px; text-align:left}
+    .mode-tabs{display:flex; gap:6px; margin-top:8px}
+    .tab{padding:6px 10px; border:1px solid #e2e8f0; border-radius:999px; font-size:12px; cursor:pointer; background:#f8fafc}
+    .tab.active{background:#e2f0ff; border-color:#bfdbfe}
+  </style>
+</head>
+<body>
+  <header>
+    <div class="logo" aria-hidden="true"></div>
+    <h1>Vennio · Find the best place for everyone’s commute</h1>
+  </header>
+
+  <main class="container">
+    <aside class="panel">
+      <label for="pcs">Enter 2+ UK postcodes</label>
+      <textarea id="pcs" placeholder="e.g. B1 1AA, B68 0NB, WV1 1SB"></textarea>
+      <div class="hint">Separate with commas or new lines. We’ll validate each postcode with <code>postcodes.io</code>.</div>
+
+      <div class="row">
+        <button class="primary" id="go">Find central location</button>
+        <button class="ghost" id="demo">Try demo</button>
+        <button class="ghost" id="clear">Clear</button>
+      </div>
+
+      <div id="status" class="hint" style="margin-top:12px"></div>
+
+      <div id="results" style="display:none">
+        <h3 style="font-family:Poppins;margin:16px 0 8px">Central result</h3>
+        <div class="kv" id="kv"></div>
+
+        <!-- Editable chips with remove (×) -->
+        <div class="chips" id="chips"></div>
+
+        <!-- Bias controls -->
+        <div class="section">
+          <label><strong>Bias the centre toward a postcode</strong></label>
+          <div class="field"><select id="biasSelect"></select></div>
+          <div class="field">
+            <span class="small" style="width:90px">Bias: <span id="biasPct">0%</span></span>
+            <input id="biasSlider" type="range" min="0" max="100" value="0" />
+            <button id="applyBias" class="primary" style="padding:8px 12px; font-size:12px">Update centre</button>
+          </div>
+          <div class="hint">0% = pure geometric centre. 100% = exactly the chosen postcode. We blend coordinates linearly.</div>
+        </div>
+
+        <!-- Travel times -->
+        <div class="section">
+          <label><strong>Travel time to centre</strong></label>
+          <div class="mode-tabs">
+            <div class="tab active" data-mode="car">Car</div>
+            <div class="tab" data-mode="train">Train</div>
+            <div class="tab" data-mode="bus">Bus</div>
+          </div>
+          <div class="hint">Car times use the public OSRM demo (best-effort). Train &amp; bus need API keys (e.g., TravelTime or TransportAPI).</div>
+          <table id="timesTbl"><thead><tr><th>Postcode</th><th>Distance (km)</th><th id="thMode">Drive time</th><th>Status</th></tr></thead><tbody></tbody></table>
+        </div>
+
+        <div class="footer small">Tip: share this exact search using the URL – it updates automatically.</div>
+      </div>
+    </aside>
+
+    <section id="map"></section>
+  </main>
+
+  <script>
+    // --- Map setup ---
+    const map = L.map('map', { zoomControl: true });
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '&copy; OpenStreetMap contributors' }).addTo(map);
+    map.setView([52.4862, -1.8904], 7);
+
+    const markerGroup = L.layerGroup().addTo(map);
+    let centreMarker = null, centreCircle = null;
+
+    // Elements
+    const qs = new URLSearchParams(location.search);
+    const pcsField = document.getElementById('pcs');
+    const goBtn = document.getElementById('go');
+    const demoBtn = document.getElementById('demo');
+    const clearBtn = document.getElementById('clear');
+    const statusEl = document.getElementById('status');
+    const resWrap = document.getElementById('results');
+    const kv = document.getElementById('kv');
+    const chips = document.getElementById('chips');
+    const biasSelect = document.getElementById('biasSelect');
+    const biasSlider = document.getElementById('biasSlider');
+    const biasPct = document.getElementById('biasPct');
+    const applyBiasBtn = document.getElementById('applyBias');
+    const timesTbody = document.getElementById('timesTbl').querySelector('tbody');
+    const thMode = document.getElementById('thMode');
+    const modeTabs = document.querySelectorAll('.tab');
+
+    // Helpers
+    const parseInput = (str) => str.split(/[\n,;]+/).map(s=>s.trim()).filter(Boolean);
+    const setStatus = (msg, ok=true) => { statusEl.textContent = msg; statusEl.className = ok ? 'hint ok' : 'hint bad'; };
+    const fmtKm = (m) => (m/1000).toFixed(2) + ' km';
+    const toRad = (d)=> d*Math.PI/180;
+    function haversine(a,b){ const R=6371e3; const dLat=toRad(b.lat-a.lat), dLng=toRad(b.lng-a.lng); const lat1=toRad(a.lat), lat2=toRad(b.lat); const s=Math.sin(dLat/2)**2 + Math.cos(lat1)*Math.cos(lat2)*Math.sin(dLng/2)**2; return 2*R*Math.asin(Math.sqrt(s)); }
+    function averageCentre(points){ const n=points.length; const sum=points.reduce((acc,p)=>({lat:acc.lat+p.lat, lng:acc.lng+p.lng}), {lat:0,lng:0}); return { lat: sum.lat/n, lng: sum.lng/n }; }
+    function blend(a,b,alpha){ return { lat: a.lat*(1-alpha) + b.lat*alpha, lng: a.lng*(1-alpha) + b.lng*alpha }; }
+
+    // Robust fetch with CORS fallbacks (keeps demo working in sandbox)
+    async function safeFetchJSON(url){
+      try{ const r = await fetch(url, {mode:'cors'}); if(r.ok){ return await r.json(); } }catch(e){}
+      try{ const r2 = await fetch(`https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`); if(r2.ok){ return JSON.parse(await r2.text()); } }catch(e){}
+      try{ const r3 = await fetch(`https://thingproxy.freeboard.io/fetch/${url}`); if(r3.ok){ return await r3.json(); } }catch(e){}
+      throw new Error('Network blocked');
+    }
+
+    // Demo coords fallback if all network calls fail
+    const DEMO_COORDS = {
+      'B11AA': {postcode:'B1 1AA', lat:52.47800, lng:-1.90000, admin_district:'Birmingham'},
+      'B680NB': {postcode:'B68 0NB', lat:52.48550, lng:-2.00300, admin_district:'Sandwell'},
+      'WV11SB': {postcode:'WV1 1SB', lat:52.58600, lng:-2.12900, admin_district:'Wolverhampton'}
+    };
+
+    // API
+    async function geocodePostcode(pc){
+      const clean = pc.replace(/\s+/g,'');
+      const key = clean.toUpperCase();
+      const url = `https://api.postcodes.io/postcodes/${encodeURIComponent(clean)}`;
+      try{
+        const data = await safeFetchJSON(url);
+        if(data.status===200){ const r=data.result; return {postcode:r.postcode, lat:r.latitude, lng:r.longitude, admin_district:r.admin_district}; }
+        throw new Error('Invalid postcode');
+      }catch(e){
+        if(DEMO_COORDS[key]){ return DEMO_COORDS[key]; }
+        throw e;
+      }
+    }
+    async function reverseToNearestPostcode(lat,lng){
+      const url = `https://api.postcodes.io/postcodes?lon=${lng}&lat=${lat}`;
+      try{ const data = await safeFetchJSON(url); if(data.status===200 && data.result?.length){ return data.result[0]; } }catch(e){}
+      return null;
+    }
+
+    // UI renderers
+    function renderMarkers(points){
+      markerGroup.clearLayers();
+      points.forEach((p)=>{ L.marker([p.lat,p.lng]).addTo(markerGroup).bindPopup(`<strong>${p.postcode}</strong>`); });
+      const bounds = L.latLngBounds(points.map(p=>[p.lat,p.lng]));
+      if(centreMarker){ bounds.extend(centreMarker.getLatLng()); }
+      map.fitBounds(bounds.pad(0.2));
+    }
+    function renderCentre(c, spreadKm){
+      if(centreMarker){ map.removeLayer(centreMarker); centreMarker=null; }
+      if(centreCircle){ map.removeLayer(centreCircle); centreCircle=null; }
+      centreMarker = L.marker([c.lat,c.lng], {title:'Geometric centre'}).addTo(map);
+      centreCircle = L.circle([c.lat,c.lng], {radius: Math.max(spreadKm*500, 200), color: '#0077A6', fillColor:'#6BCBCE', fillOpacity:0.15}).addTo(map);
+    }
+    function updateURL(pcs){
+      const enc = pcs.map(p=>encodeURIComponent(p)).join(';');
+      const next = new URL(location.href);
+      if(enc){ next.searchParams.set('pcs', enc); } else { next.searchParams.delete('pcs'); }
+      history.replaceState({}, '', next.toString());
+    }
+    function renderInputChips(list){
+      chips.innerHTML = '';
+      list.forEach((pc)=>{
+        const wrap = document.createElement('span');
+        wrap.className='chip';
+        wrap.innerHTML = `${pc}<button title="Remove" aria-label="Remove ${pc}">×</button>`;
+        wrap.querySelector('button').addEventListener('click', ()=>{
+          const arr = parseInput(pcsField.value).filter(x=> x.toUpperCase().replace(/\s+/g,'') !== pc.toUpperCase().replace(/\s+/g,'') );
+          pcsField.value = arr.join(', ');
+          if(arr.length>=2) run(); else resetAll();
+        });
+        chips.appendChild(wrap);
+      });
+    }
+
+    // Travel times
+    let currentMode = 'car';
+    modeTabs.forEach(tab=>{
+      tab.addEventListener('click', ()=>{
+        modeTabs.forEach(t=>t.classList.remove('active'));
+        tab.classList.add('active');
+        currentMode = tab.dataset.mode;
+        thMode.textContent = currentMode==='car' ? 'Drive time' : (currentMode==='train' ? 'Train time' : 'Bus time');
+        run();
+      });
+    });
+    async function renderTravelTimes(points, centre){
+      timesTbody.innerHTML='';
+      for(const p of points){
+        const dist = haversine({lat:p.lat,lng:p.lng}, centre)/1000;
+        let timeTxt = '—', stateTxt = '';
+        if(currentMode==='car'){
+          try{ const secs = await carTimeSeconds([p.lng,p.lat],[centre.lng,centre.lat]); timeTxt = secs? formatDuration(secs) : 'n/a'; stateTxt = secs? 'OK (OSRM)' : 'No route'; }
+          catch(e){ timeTxt='n/a'; stateTxt='Error'; }
+        }else{ timeTxt = 'Connect API'; stateTxt = 'Needs TravelTime/TransportAPI key'; }
+        const tr = document.createElement('tr');
+        tr.innerHTML = `<td>${p.postcode}</td><td>${dist.toFixed(2)}</td><td>${timeTxt}</td><td>${stateTxt}</td>`;
+        timesTbody.appendChild(tr);
+      }
+    }
+    function formatDuration(secs){ const m=Math.round(secs/60); if(m<60) return m+' min'; const h=Math.floor(m/60), r=m%60; return `${h} hr ${r} min`; }
+    async function carTimeSeconds([lon1,lat1],[lon2,lat2]){
+      const url = `https://router.project-osrm.org/route/v1/driving/${lon1},${lat1};${lon2},${lat2}?overview=false`;
+      try{ const r = await fetch(url, {mode:'cors'}); if(r.ok){ const d=await r.json(); return d?.routes?.[0]?.duration || null; } }catch(e){}
+      try{ const r2 = await fetch(`https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`); if(r2.ok){ const d=JSON.parse(await r2.text()); return d?.routes?.[0]?.duration || null; } }catch(e){}
+      try{ const r3 = await fetch(`https://thingproxy.freeboard.io/fetch/${url}`); if(r3.ok){ const d=await r3.json(); return d?.routes?.[0]?.duration || null; } }catch(e){}
+      return null;
+    }
+
+    // Core flow
+    let lastGeocoded = [];
+    async function run(){
+      const pcs = parseInput(pcsField.value);
+      if(pcs.length < 2){ setStatus('Please enter at least two UK postcodes.', false); return; }
+      setStatus('Looking up postcodes…');
+      const lookups = await Promise.allSettled(pcs.map(geocodePostcode));
+      const ok = lookups.filter(x=>x.status==='fulfilled').map(x=>x.value);
+      const failed = lookups.map((x,i)=>({i,x})).filter(w=>w.x.status==='rejected').map(w=>pcs[w.i]);
+      if(ok.length < 2){ setStatus(`We need at least two valid UK postcodes. ${failed.length? 'Failed: '+failed.join(', ') : ''}`, false); return; }
+      lastGeocoded = ok; // cache for bias-only updates
+
+      // Populate bias select
+      biasSelect.innerHTML = '';
+      ok.forEach((p,i)=>{ const opt=document.createElement('option'); opt.value=i; opt.textContent=p.postcode; biasSelect.appendChild(opt); });
+
+      // Render input chips with remove buttons (always)
+      renderInputChips(ok.map(p=>p.postcode));
+
+      // Initial compute
+      computeAndRenderFromGeocoded();
+
+      // Status & URL
+      setStatus(`Done. Found centre for ${ok.length} postcodes.`);
+      updateURL(ok.map(p=>p.postcode));
+    }
+
+    function computeAndRenderFromGeocoded(){
+      if(!lastGeocoded.length) return;
+      const ok = lastGeocoded;
+
+      const baseCentre = averageCentre(ok);
+      const biasIndex = parseInt(biasSelect.value || '0',10) || 0;
+      const alpha = (parseInt(biasSlider.value,10)||0)/100;
+      const centre = blend(baseCentre, {lat: ok[biasIndex].lat, lng: ok[biasIndex].lng}, alpha);
+
+      // Distances
+      const dists = ok.map(pt=>haversine(centre, {lat:pt.lat,lng:pt.lng}));
+
+      // Draw
+      renderMarkers(ok);
+      renderCentre(centre, Math.max(...dists)/1000);
+
+      // Results panel
+      resWrap.style.display = 'block';
+      kv.innerHTML = '';
+      kv.insertAdjacentHTML('beforeend', `<div><span>Centre (lat, lng)</span><strong>${centre.lat.toFixed(5)}, ${centre.lng.toFixed(5)}</strong></div>`);
+      const avg = dists.reduce((a,b)=>a+b,0)/dists.length, min = Math.min(...dists), max = Math.max(...dists);
+      kv.insertAdjacentHTML('beforeend', `<div><span>Avg distance to centre</span><strong>${fmtKm(avg)}</strong></div>`);
+      kv.insertAdjacentHTML('beforeend', `<div><span>Min ↔ Max distance</span><strong>${fmtKm(min)} → ${fmtKm(max)}</strong></div>`);
+      biasPct.textContent = `${Math.round(alpha*100)}%`;
+
+      // Nearest postcode + travel times (async but not blocking UI)
+      reverseToNearestPostcode(centre.lat, centre.lng).then(nearest=>{
+        if(!nearest) return;
+        const row = document.createElement('div');
+        row.innerHTML = `<div><span>Nearest central postcode</span><strong>${nearest.postcode}</strong></div>`;
+        kv.prepend(row.firstChild);
+      });
+      renderTravelTimes(ok, centre);
+    }
+
+    function resetAll(){
+      pcsField.value=''; markerGroup.clearLayers();
+      if(centreMarker){ map.removeLayer(centreMarker); centreMarker=null; }
+      if(centreCircle){ map.removeLayer(centreCircle); centreCircle=null; }
+      resWrap.style.display='none'; setStatus(''); updateURL([]);
+      map.setView([52.4862,-1.8904], 7);
+    }
+
+    // Event handlers
+    goBtn.addEventListener('click', run);
+    demoBtn.addEventListener('click', ()=>{ pcsField.value = 'B1 1AA, B68 0NB, WV1 1SB'; run(); });
+    clearBtn.addEventListener('click', resetAll);
+
+    // Bias interactions
+    applyBiasBtn.addEventListener('click', computeAndRenderFromGeocoded);
+    biasSelect.addEventListener('change', computeAndRenderFromGeocoded);
+    biasSlider.addEventListener('input', ()=>{ biasPct.textContent = `${biasSlider.value}%`; });
+
+    (function initFromURL(){
+      const pcsParam = qs.get('pcs');
+      if(pcsParam){ const list = pcsParam.split(';').map(decodeURIComponent); pcsField.value = list.join(', '); run(); }
+    })();
+  </script>
+</body>
+</html>
